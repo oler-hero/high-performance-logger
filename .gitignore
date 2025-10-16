@@ -1,0 +1,25 @@
+# Build/IDE
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+.vscode/
+.vs/
+.idea/
+
+# Binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+*.exe
+*.pdb
+*.ilk
+
+# Logs/temp
+*.log
+*.tmp
+*.cache
