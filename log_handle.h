@@ -1,0 +1,53 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <initializer_list>
+#include <memory>
+#include <string>
+
+#include <vector>
+
+#include "log_common.h"
+#include "log_msg.h"
+
+namespace logger {
+
+class LogSink;
+using LogSinkPtr = std::shared_ptr<LogSink>;
+using LogSinkPtrList = std::initializer_list<LogSinkPtr>;
+
+class LogHandle {
+ public:
+  //三个构造保证灵活
+  explicit LogHandle(LogSinkPtrList sinks);
+  //防止隐式类型转换
+  explicit LogHandle(LogSinkPtr sink);
+
+  template <typename It>
+  LogHandle(It begin, It end) : LogHandle(LogSinkPtrList(begin, end)) {}
+  
+  ~LogHandle() = default;
+
+  LogHandle(const LogHandle&) = delete;
+  LogHandle& operator=(const LogHandle&) = delete;
+
+  void SetLevel(LogLevel& lvl);
+
+  LogLevel GetLevel() const;
+
+  void Log(LogLevel lvl, SourceLocation loc, StringView msg);
+
+ private:
+  bool ShouldLog_(LogLevel level) const noexcept {
+    return level >= level_ && !sinks_.empty();
+  }
+
+  void Log_(const LogMsg& log_msg);
+
+ private:
+  std::atomic<LogLevel> level_;
+  std::vector<LogSinkPtr> sinks_;
+};
+
+}
