@@ -52,8 +52,8 @@ class Context {
 //作用是：执行空任务，等待把队列刷干净
 #define WAIT_TASK_IDLE(runner_tag) EXECUTOR->PostTaskAndGetResult(runner_tag, []() {})->wait()
 
-#define POST_REPEATED_TASK(runner_tag, delta, repeat_num) \
-    EXECUTOR->PostReaptedTask(runner_tag, task, delta, repeat_num)
+#define POST_REPEATED_TASK(runner_tag, task, delta, repeat_num) \
+    EXECUTOR->PostRepeatedTask(runner_tag, task, delta, repeat_num)
 
 
 

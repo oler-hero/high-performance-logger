@@ -11,8 +11,6 @@ ThreadPool::ThreadInfo::~ThreadInfo() {
     }
 }
 
-
-
 void ThreadPool::AddThread_() {
     ThreadInfoPtr thread_ptr = std::make_shared<ThreadInfo>();      //创造一个空指针，方便保管线程对象
     auto func = [this]() {
@@ -74,11 +72,6 @@ bool ThreadPool::Start() {
 
     return true;
 }
-
-
-
-
-
 
     }
 }

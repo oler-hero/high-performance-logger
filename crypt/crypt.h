@@ -12,7 +12,7 @@ std::tuple<std::string, std::string> GenECDHKey();
 
 /// @brief 计算共享密钥
 /// @param client_pri 自己的私钥 + 对方的公钥
-/// @param server_pub 
+/// @param server_pub 用的都是二进制
 /// @return 双方协商出的共享密钥（用于后续加密）(双方用不同参数计算，但结果相同)
 std::string GenECDHSharedSecret(const std::string& client_pri, const std::string& server_pub);
 
