@@ -167,7 +167,7 @@ size_t ZstdCompress::CompressStream(const void* in, size_t in_size,
 
 size_t ZstdCompress::DecompressStream(const void* in, size_t in_size,
                                       void* out,size_t out_cap) {
-    if (!dctx_ || !out || out_cap) {
+    if (!dctx_ || !out || out_cap == 0) {
         return 0;
     }
 
@@ -188,7 +188,7 @@ size_t ZstdCompress::DecompressStream(const void* in, size_t in_size,
 }
 
 bool ZstdCompress::SetCompressionDictionary(const void* dict, size_t dict_size) {
-    if (!cctx_ || !dict ||dict_size) {
+    if (!cctx_ || !dict ||dict_size == 0) {
         return false;
     }
 
