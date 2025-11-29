@@ -1,93 +1,39 @@
-# my_high_performance_log
+## 高性能日志系统
+
+zstd-1.5.6
+zlib 1.2.13
+pb 21.8
+cryptopp 8.9.0
+cryptopp-cmake master 2024-10-13
+fmt 11.0.2
 
 
+主导设计并实现跨平台高性能日志系统，解决传统日志系统性能瓶颈、资源占用高、安全性不足等痛点。
+系统支持每秒10万级日志写入，通过内存映射（mmap）技术实现毫秒级延迟，采用Zstd 和 Z1ib等流式压缩算法优化存储空间（普通日志数据，压缩率可达到80%），并通过非对称加密与对称加密结合的策略保证数据安全，并通过Protobuf技术实现日志的高效序列化，并通过元数据组装的形式实现自定义日志格式的能力。
 
-## Getting started
+### 主要工作：
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+1.系统架构设计
+·主导并从0到1设计整个高性能日志系统的框架。
+·采用生产者-消费者模式构建异步日志框架，通过双缓冲队列解耦日志收集与持久化过程。
+·设计分层架构（日志采集→压缩加密→mmap主从双缓存→持久化一淘汰），模块间通过抽象接口解耦。实现插件化扩展机制，支持自定义日志格式、存储策略、日志文件分片等。
+·实现带扩容机制的mmap，保障极端情况下的日志高性能写入与稳定性。
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+2.性能优化
+·集成 Zlib/Zstd 压缩库，使用流式压缩，并通过高效利用前向缓冲区、流式压缩策略大幅降低CPU占用，且压缩率可达到80%。
+·基于mmap 实现零拷贝文件写入，IO吞吐量大幅提升，且保证日志极端情况下也不会丢失。
+·开发高性能线程池（支持动态扩容），实现Strand调度机制，提高多线程编程效率，并保证多线程数据的安全性。
 
-## Add your files
+3.安全模块开发
+·使用ECDH非对称加密与AES 对称加密结合的策略，保障日志数据端到端安全·私钥始终保持在后端，确保密钥的安全性。
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+4.跨平台实现
+·封装平台差异层（POSIX/Win32API），实现统一文件操作接口。
+·基于C++17filesystem 模块开发日志轮转功能，支持按大小自动分片。
 
-```
-cd existing_repo
-git remote add origin http://git.cpptrain.top/ningxuan/my_high_performance_log.git
-git branch -M main
-git push -uf origin main
-```
+### 主要难点
 
-## Integrate with your tools
-
-- [ ] [Set up project integrations](http://git.cpptrain.top/ningxuan/my_high_performance_log/-/settings/integrations)
-
-## Collaborate with your team
-
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+1.实时压缩与性能平衡：使用Z1ib、Zstd 的流式压缩，每行日志都压缩，且充分复用前向缓冲区，提高了压缩性能和压缩率。
+2.多线程数据竞争问题：基于线程池，实现strand任务调度模型，保证多线程开发的安全性。
+3.崩溃日志防丢失机制：实现双重持久化策略（mmap+扩容机制），保证极端条件下日志也不会丢失。
+4.跨平台兼容性：抽象平台特性层，对内系统层平台相关，对外业务抽象层平台无关，确保业务层完全跨平台。
