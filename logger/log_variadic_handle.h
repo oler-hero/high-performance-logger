@@ -22,11 +22,11 @@ class VariadicLogHandle : public LogHandle {
  private:
   template <typename ...Args> 
    void Log_(SourceLocation loc, LogLevel lvl, fmt::basic_string_view<char> fmt, Args&&... args) {
-    if (!ShouldLog_(loc)) {
+    if (!ShouldLog_(lvl)) {
         return;
     }
     fmt::basic_memory_buffer<char, 256> buf;
-    fmt::detail::vformat_to(buf, fmt, fmt::make_fommat_args(std::forward<Args>(args)...));
+    fmt::detail::vformat_to(buf, fmt, fmt::make_format_args(std::forward<Args>(args)...));
     LogMsg msg(loc, lvl, StringView(buf.data(), buf.size()));
     LogHandle::Log_(msg);
    }

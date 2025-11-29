@@ -148,43 +148,44 @@ void EffectiveSink::Flush() {
 }
 
 void EffectiveSink::Log(const LogMsg& msg) {
-    //static thread_local:每个线程有自己独立的静态缓冲区,线程内复用，避免重复分配,线程间隔离，无需同步
+    //static thread_local:每个线程有自己独立的静态缓冲区,线程内复用,避免重复分配,线程间隔离,无需同步
     static thread_local MemoryBuf buf;  
     formatter_->Format(msg, &buf);      //第一步先格式化成字符串
     if (master_cache_->Empty()) {
-        compress_->ResetStream();   //压缩器是有状态的，如果 master_cache_ 为空，说明：
+        compress_->ResetStream();   //压缩器是有状态的,如果 master_cache_ 为空,说明：
         //上一个批次的数据已经全部写入并清空
         //现在是新的批次开始
-        //需要重置压缩器状态，从"干净状态"开始
+        //需要重置压缩器状态,从"干净状态"开始
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);       //加锁保护全流程
-        compressed_buf_.reserve(compress_->CompressBound(buf.size()));      //预留足够空间
+        compressed_buf_.resize(compress_->CompressBound(buf.size()));      //预留足够空间
         size_t compressed_size = 
             compress_->Compress(buf.data(), buf.size(), compressed_buf_.data(), compressed_buf_.size());    //压缩时存储返回值用于判断是否出错
         if (compressed_size == 0) {     //出错写出错并返回
             LOG_ERROR("EffectiveSink::Log: compress failed");
             return;
         }
-        encryped_buf_.clear();      //将 size() 置为 0，容量通常保留，便于复用,因为上一次加密的数据可能还在
+        encryped_buf_.clear();      //将 size() 置为 0,容量通常保留,便于复用,因为上一次加密的数据可能还在
         encryped_buf_.reserve(compressed_size + 16);    //compressed_size + 16：+ 16 是为了容纳加密算法可能添加的开销,+16因为块大小是16
+        crypt_->Encrypt(compressed_buf_.data(), compressed_size, encryped_buf_); //加密调用
         if (encryped_buf_.empty()) {    //错误则写日志并返回
             LOG_ERROR("EffectiveSink::Log: encrypt failed");
             return;
         }
-        WirteToCache_(&encryped_buf_, encryped_buf_.size());    //将日志写入主缓存
+        WirteToCache_(encryped_buf_.data(), encryped_buf_.size());    //将日志写入主缓存
     }
     if (NeedCacheToFile_()) {
         if (is_slave_free_.load()) {
             is_slave_free_.store(false);
             SwapCache_();
         }
-        PrepareToFile_();   //理论上是一种并发保护方法，但是貌似冗余了
+        PrepareToFile_();   //理论上是一种并发保护方法,但是貌似冗余了
     }
 }
 
 EffectiveSink::EffectiveSink(Conf conf) : conf_(std::move(conf)) {
-    LOG_INFO("EffectiveSink: dir={}, prefix={}, pub_key={}, interval={}, single_size={}, total_size={}," 
+    LOG_INFO("EffectiveSink: dir={}, prefix={}, pub_key={}, interval={}, single_size={}, total_size={}", 
             conf_.dir.string(), conf_.prefix, conf_.pub_key, conf_.interval.count(), conf_.single_size.count(),
             conf_.total_size.count());      //自定义的 space 里，.count() 返回内部的标量值,chrono同理
     if (std::filesystem::exists(conf_.dir)) {   //- exists：检查目录是否存在

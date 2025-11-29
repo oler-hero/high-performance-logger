@@ -26,15 +26,11 @@ public:
         }
     }
 
-
-
 private:
     std::function<void()> func_;
 
 };
-
-
-}
+}   //namespace logger
 
 #define _LOG_CONCAT(a, b) a##b
 #define _MAKE_DEFER_(line) logger::ExecuteOnScopeExit _LOG_CONCAT(defer, line) = [&]()

@@ -142,7 +142,7 @@ void MMapAux::EnsureCapacity_(size_t new_size) {  //new_size传入的是数据�
     auto dst_capacity = capacity_;
 
     while (dst_capacity < real_size) {
-        capacity_ += GetPageSize();             //获取页大小的，别被fs::那个误导了，那个是utils里获取文件大小的
+        dst_capacity += GetPageSize();             //获取页大小的，别被fs::那个误导了，那个是utils里获取文件大小的
     }
 
     Reserve_(dst_capacity);         //其实reserve内部实现了capacity的更新，使用dst无副作用

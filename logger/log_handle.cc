@@ -17,7 +17,7 @@ LogHandle::LogHandle(LogSinkPtr sink) : level_(LogLevel::kInfo) {
 }
 
 void LogHandle::SetLevel(LogLevel& lvl) {
-    level_ = lvl;
+    level_.store(lvl);
 }
 
 LogLevel LogHandle::GetLevel() const {
@@ -31,7 +31,7 @@ void LogHandle::Log_(const LogMsg& msg) {
 }
 
 void LogHandle::Log(LogLevel lvl, SourceLocation loc, StringView msg) {
-    if (!ShouldLog_(LogLevel::kInfo)) {
+    if (!ShouldLog_(lvl)) {
         return ;
     }
 

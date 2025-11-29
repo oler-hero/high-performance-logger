@@ -10,28 +10,28 @@ namespace logger {
 
 bool MMapAux::TryMap_(size_t capacity) {
     //为open函数提供兼容的路径参数,这边先从fielsystem降级到string再降级到c风格字符串
-    int fd = open(file_path_.string().c_str(), O_RDWR, S_IRWXU);        //注意这里的读写不一定能用，后续看一下
+    int fd = open(file_path_.string().c_str(), O_RDWR | O_CREAT, S_IRWXU);        //注意这里的读写不一定能用，后续看一下
 
     LOG_DEFER {
         if (fd != -1) {
             close(fd);
         }
-    }
+    };
 
-    if (fs == -1) {
+    if (fd == -1) {
         return false;
     }else {
         ftruncate(fd, capacity);
     }
 
     handle_ = mmap(NULL, capacity, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    retrun handle_ == MAP_FAILED;
+    return handle_ != MAP_FAILED;
 
 }
 
 void MMapAux::Unmap_() {
     if (handle_) {
-        mummap(handle_, capacity_);
+        munmap(handle_, capacity_);
     }
     handle_ = NULL;                 //标记一种状态
 }

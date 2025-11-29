@@ -17,8 +17,8 @@
 #define LOGGER_CALL(handle, level, ...)                                                                          \
     if (handle) {                                                                                                \
         (handle)->Log(logger::SourceLocation{__FILE__, __LINE__, static_cast<const char*>(__FUNCTION__)}, level, \
-                      __VA_ARGS__)                                                                               \
-    }
+                      __VA_ARGS__);                                                                               \
+    };
 
 
 //按“编译期激活级别”决定：Trace 日志宏是“真的发日志”还是“编译成空操作”，从而对禁用级别做到零运行时开销。
@@ -28,14 +28,14 @@
 #define EXT_LOG_TRACE(...) LOG_LOGGER_TRACE(logger::LogFactory::Instance().GetLogHandle(), __VA_ARGS__)     //便捷宏。自动从工厂取全局句柄，再把所有参数转发给上面的宏；适合大多数场景不手动传句柄。
 #else
 #define LOG_LOGGER_TRACE(handle, ...) (void)0   //宏定义为“空操作”。(void)0 是标准惯用法：什么都不做，但在语法上像一条可放在语句位置的表达式，保证调用点编译通过且无开销。  
-#define EXT_LOG_TRACEE(...) (void)0             //同上，禁用时全局版也为空操作。
+#define EXT_LOG_TRACE(...) (void)0             //同上，禁用时全局版也为空操作。
 #endif
 
 //(void)0 是一个“空操作语句”。在禁用日志宏时，用它让宏展开后仍然是“一条合法语句”，吞掉调用处的分号，且不生成任何机器码。
 //宏调用总是写成 MACRO(...);。禁用时展开成 (void)0;，在任何语句位置都合法，避免空展开导致奇怪的语法边界问题。
 #if LOGGER_ACTIVE_LEVEL <= LOGGER_LEVEL_DEBUG
-#define LOG_LOGGER_DEBUG(handle, ...) LOGGER_CALL(handle, logger::LogLevel::kInfo, __VA_ARGS__)
-#define EXT_LOG_DEBUG(...) LOG_LOGGER_DEBUG(logger::LogFactory::Instance().GetLogHandle(), __VA_RAGS__)
+#define LOG_LOGGER_DEBUG(handle, ...) LOGGER_CALL(handle, logger::LogLevel::kDebug, __VA_ARGS__)
+#define EXT_LOG_DEBUG(...) LOG_LOGGER_DEBUG(logger::LogFactory::Instance().GetLogHandle(), __VA_ARGS__)
 #else
 #define LOG_LOGGER_DEBUG(handle, ...) (void)0
 #define EXT_LOG_DEBUG(...) (void)0
@@ -43,9 +43,9 @@
 
 #if LOGGER_ACTIVE_LEVEL <=LOGGER_LEVEL_INFO
 #define LOG_LOGGER_INFO(handle, ...) LOGGER_CALL(handle, logger::LogLevel::kInfo, __VA_ARGS__)
-#define EXT_LOG_INFO(...) LOG_LOGGER_INFO(logger::LogFactory::Instance().GetLogHandle(),__VA_ARGS__)
+#define EXT_LOG_INFO(...) LOG_LOGGER_INFO(logger::LogFactory::Instance().GetLogHandle(), __VA_ARGS__)
 #else
-#define LOG_LOGGER_INFO (void)0
+#define LOG_LOGGER_INFO(handle, ...) (void)0
 #define EXT_LOG_INFO(...) (void)0
 #endif
 
@@ -57,7 +57,7 @@
 #define EXT_LOG_WARN(...) (void)0
 #endif
 
-#if LOGGER_AVTICE_LEVEL <= LOGGER_LEVEL_ERROR
+#if LOGGER_ACTIVE_LEVEL <= LOGGER_LEVEL_ERROR
 #define LOG_LOGGER_ERROR(handle, ...) LOGGER_CALL(handle, logger::LogLevel::kError, __VA_ARGS__)
 #define EXT_LOG_ERROR(...) LOG_LOGGER_ERROR(logger::LogFactory::Instance().GetLogHandle(), __VA_ARGS__)
 #else

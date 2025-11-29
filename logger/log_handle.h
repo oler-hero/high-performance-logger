@@ -38,7 +38,7 @@ class LogHandle {
 
   void Log(LogLevel lvl, SourceLocation loc, StringView msg);
 
- private:
+ protected:
   bool ShouldLog_(LogLevel level) const noexcept {
     return level >= level_ && !sinks_.empty();
   }

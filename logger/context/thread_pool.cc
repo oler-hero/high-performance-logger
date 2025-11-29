@@ -39,7 +39,7 @@ void ThreadPool::AddThread_() {
     };
     //func是一个函数，想要把它变成线程指针存储起来只能这样
     thread_ptr->ptr = std::make_shared<std::thread> (std::move(func));      //这里不能加()加了就是调用它了，我们是存着，后面再调用
-    this->worker_threads_.emplace_back(func);
+    this->worker_threads_.emplace_back(thread_ptr);
 
 }
 

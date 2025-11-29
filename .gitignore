@@ -23,3 +23,9 @@ CMakeCache.txt
 *.log
 *.tmp
 *.cache
+
+# 在现有 .gitignore 文件末尾添加第三方库忽略规则
+echo "" >> .gitignore
+echo "# Third-party libraries" >> .gitignore
+echo "logger/third_party/" >> .gitignore
+echo "compile_commands.json" >> .gitignore
