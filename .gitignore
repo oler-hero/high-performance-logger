@@ -1,5 +1,5 @@
 # Build output / IDE
-build/
+/build/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -28,8 +28,7 @@ compile_commands.json
 *.tmp
 *.cache
 
-# Vendored third-party sources are tracked; ignore accidental local additions
-logger/third_party/
+# Vendored third-party sources are tracked as-is
 
 # Local scratch files and notes (not part of the project)
 /test.c
@@ -37,3 +36,5 @@ logger/third_party/
 /test.exe
 /test_macro.cpp
 /interview_prompts*.md
+/baidi_*.jpg
+/idphoto_*.jpg
