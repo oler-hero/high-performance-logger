@@ -1,4 +1,4 @@
-# Build/IDE
+# Build output / IDE
 build/
 cmake-build-*/
 CMakeFiles/
@@ -6,6 +6,7 @@ CMakeCache.txt
 .vscode/
 .vs/
 .idea/
+compile_commands.json
 
 # Binaries
 *.o
@@ -13,19 +14,26 @@ CMakeCache.txt
 *.a
 *.lib
 *.so
-*.dll
+.dll
 *.dylib
-*.exe
 *.pdb
 *.ilk
 
-# Logs/temp
+# Keep the bundled protoc used by script/build_windows.py
+*.exe
+!script/bin/protoc.exe
+
+# Logs / temp
 *.log
 *.tmp
 *.cache
 
-# 在现有 .gitignore 文件末尾添加第三方库忽略规则
-echo "" >> .gitignore
-echo "# Third-party libraries" >> .gitignore
-echo "logger/third_party/" >> .gitignore
-echo "compile_commands.json" >> .gitignore
+# Vendored third-party sources are tracked; ignore accidental local additions
+logger/third_party/
+
+# Local scratch files and notes (not part of the project)
+/test.c
+/test.cpp
+/test.exe
+/test_macro.cpp
+/interview_prompts*.md

@@ -1,39 +1,212 @@
-## 高性能日志系统
+# High-Performance Logger
 
-zstd-1.5.6
-zlib 1.2.13
-pb 21.8
-cryptopp 8.9.0
-cryptopp-cmake master 2024-10-13
-fmt 11.0.2
+[English](README.md) | [简体中文](README.zh-CN.md)
 
+A C++17 asynchronous logging library built around a **double-buffered mmap cache**, **streaming compression**, **ECDH + AES encryption**, and **Protobuf serialization**. It is designed for services that need to write large volumes of logs without blocking the business thread, while keeping the log files compressed and encrypted at rest.
 
-主导设计并实现跨平台高性能日志系统，解决传统日志系统性能瓶颈、资源占用高、安全性不足等痛点。
-系统支持每秒10万级日志写入，通过内存映射（mmap）技术实现毫秒级延迟，采用Zstd 和 Z1ib等流式压缩算法优化存储空间（普通日志数据，压缩率可达到80%），并通过非对称加密与对称加密结合的策略保证数据安全，并通过Protobuf技术实现日志的高效序列化，并通过元数据组装的形式实现自定义日志格式的能力。
+![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-### 主要工作：
+## Features
 
-1.系统架构设计
-·主导并从0到1设计整个高性能日志系统的框架。
-·采用生产者-消费者模式构建异步日志框架，通过双缓冲队列解耦日志收集与持久化过程。
-·设计分层架构（日志采集→压缩加密→mmap主从双缓存→持久化一淘汰），模块间通过抽象接口解耦。实现插件化扩展机制，支持自定义日志格式、存储策略、日志文件分片等。
-·实现带扩容机制的mmap，保障极端情况下的日志高性能写入与稳定性。
+- **Asynchronous, non-blocking writes** — producers only format and append to an mmap-backed cache; a background executor performs compression, encryption, and disk I/O.
+- **Double-buffered mmap persistence** — master/slave caches are swapped when the master reaches a configurable utilization threshold, so writing continues while the slave is flushed to disk.
+- **Streaming compression** — per-record streaming compression with Zstd or Zlib; compression contexts and input/output buffers are reused to avoid repeated allocation.
+- **End-to-end encryption** — ECDH key agreement per chunk + AES for record payloads. The private key never leaves the decoder side.
+- **Protobuf record encoding** — structured fields (level, timestamp, pid, tid, file, function, line, message) are serialized with a custom `.proto` schema, enabling custom output formats at decode time.
+- **Pluggable architecture** — sinks, formatters, compressors, and cryptors are all behind abstract interfaces.
+- **Log rotation and retention** — rotate by file size, evict oldest files when the total directory size exceeds the configured budget, and clean up periodically.
+- **Compile-time level stripping** — disabled log levels expand to `(void)0`, producing zero runtime overhead.
+- **Cross-platform** — POSIX and Win32 abstraction layers for mmap, file system, and system utilities.
+- **Offline decoder** — convert binary log files back into human-readable text with a configurable format pattern.
 
-2.性能优化
-·集成 Zlib/Zstd 压缩库，使用流式压缩，并通过高效利用前向缓冲区、流式压缩策略大幅降低CPU占用，且压缩率可达到80%。
-·基于mmap 实现零拷贝文件写入，IO吞吐量大幅提升，且保证日志极端情况下也不会丢失。
-·开发高性能线程池（支持动态扩容），实现Strand调度机制，提高多线程编程效率，并保证多线程数据的安全性。
+## Architecture
 
-3.安全模块开发
-·使用ECDH非对称加密与AES 对称加密结合的策略，保障日志数据端到端安全·私钥始终保持在后端，确保密钥的安全性。
+```mermaid
+flowchart LR
+    A["Application<br/>EXT_LOG_INFO(...)"] --> B["Formatter<br/>LogMsg -> EffectiveMsg"]
+    B --> C["Compression<br/>Zstd / Zlib (streaming)"]
+    C --> D["Encryption<br/>ECDH + AES"]
+    D --> E["mmap master cache"]
+    E -->|"swap when threshold reached"| F["mmap slave cache"]
+    F --> G["Background executor<br/>thread pool"]
+    G --> H["Log files<br/>rotation + retention"]
+    H --> I["decode tool<br/>+ server private key"]
+    I --> J["Plain-text logs"]
+```
 
-4.跨平台实现
-·封装平台差异层（POSIX/Win32API），实现统一文件操作接口。
-·基于C++17filesystem 模块开发日志轮转功能，支持按大小自动分片。
+Write path in detail:
 
-### 主要难点
+1. `EXT_LOG_*` macros / `LogHandle::Log` filter by level and format the message with `fmt`.
+2. `EffectiveSink` serializes the record with Protobuf, compresses it with the streaming compressor, and encrypts it with the AES key derived from ECDH.
+3. The encrypted record is appended to the mmap **master cache** as `ItemHeader + payload`.
+4. When the master cache exceeds the utilization threshold, master and slave are swapped, and the background executor writes the slave to disk.
+5. Files are rotated by `single_size`; when `total_size` is exceeded, the oldest files are deleted.
 
-1.实时压缩与性能平衡：使用Z1ib、Zstd 的流式压缩，每行日志都压缩，且充分复用前向缓冲区，提高了压缩性能和压缩率。
-2.多线程数据竞争问题：基于线程池，实现strand任务调度模型，保证多线程开发的安全性。
-3.崩溃日志防丢失机制：实现双重持久化策略（mmap+扩容机制），保证极端条件下日志也不会丢失。
-4.跨平台兼容性：抽象平台特性层，对内系统层平台相关，对外业务抽象层平台无关，确保业务层完全跨平台。
+### On-disk format
+
+```text
+ChunkHeader                                      ItemHeader        payload
++----------------+----------------+-------------+ +-----------+----+ +-------------------+
+| magic (8B)     | size (8B)      | pub_key     | | magic 4B  | sz | | AES ciphertext    |
+| 0xdeadbeef...  | payload bytes  | (128B)      | | size 4B   |    | | (zstd/zlib data)  |
++----------------+----------------+-------------+ +-----------+----+ +-------------------+
+```
+
+Each chunk carries the client's ephemeral public key. The decoder derives the same shared secret with the server private key, so a log file can be decoded offline without contacting the service.
+
+## Build
+
+Prerequisites:
+
+- CMake 3.20+
+- A C++17 compiler (Visual Studio 2022 / GCC / Clang)
+- Python 3
+- Windows: Visual Studio 2022 with the `v143` toolset
+
+All dependencies are vendored under `logger/third_party/`, so no network access is required:
+
+| Library | Version |
+| --- | --- |
+| zstd | 1.5.6 |
+| zlib | 1.2.13 |
+| protobuf | 21.8 |
+| cryptopp | 8.9.0 |
+| fmt | 11.0.2 |
+
+### Windows
+
+```powershell
+python script/build_windows.py
+```
+
+Artifacts (Debug configuration by default):
+
+```text
+build/x64-Debug/logger/Debug/logger.lib
+build/x64-Debug/example/Debug/logger_example.exe
+build/x64-Debug/example/Debug/macro_logger_example.exe
+build/x64-Debug/example/Debug/crypt_example.exe
+build/x64-Debug/example/Debug/zstd_example.exe
+build/x64-Debug/decode/Debug/decoder.exe
+```
+
+### Linux
+
+```bash
+python3 script/build_linux.py
+```
+
+> `script/bin/protoc` is a prebuilt x86-64 Linux binary used to generate `effective_msg.pb.*` before CMake runs. On other architectures, replace it with a `protoc` build for your platform.
+
+## Quick start
+
+```cpp
+#include "logger/logger.h"
+#include "logger/sinks/effective_sink.h"
+
+int main() {
+  logger::EffectiveSink::Conf conf;
+  conf.dir = "./logs";                    // output directory
+  conf.prefix = "app";                    // file name prefix
+  conf.pub_key = "<server-public-key-hex>";  // ECDH public key of the decoder
+  conf.single_size = logger::megabytes{4};   // rotate every 4 MB
+  conf.total_size = logger::megabytes{100};  // keep at most 100 MB
+  conf.interval = std::chrono::minutes{5};   // cleanup interval
+
+  auto sink = std::make_shared<logger::EffectiveSink>(conf);
+  auto handle = std::make_shared<logger::VariadicLogHandle>(sink);
+  EXT_LOGGER_INIT(handle);  // install the global handle
+
+  EXT_LOG_INFO("server started, port={}", 8080);
+  EXT_LOG_WARN("slow request: {} ms", 350);
+  EXT_LOG_ERROR("request failed: {}", "timeout");
+
+  sink->Flush();  // flush the current cache synchronously
+  return 0;
+}
+```
+
+Notes:
+
+- `EXT_LOG_*` use the global handle installed by `EXT_LOGGER_INIT`. You can also call `handle->Log(...)` directly.
+- `ConsoleSink` can be combined with `EffectiveSink` — `LogHandle` accepts one or more sinks.
+- Log levels are stripped at compile time via `LOGGER_ACTIVE_LEVEL` (default: everything enabled). Defining it to e.g. `LOGGER_LEVEL_WARN` removes lower-level calls from the binary.
+
+### CMake integration
+
+```cmake
+add_subdirectory(path/to/high-performance-logger)
+
+add_executable(app main.cc)
+target_link_libraries(app PRIVATE logger)
+target_include_directories(app PRIVATE path/to/high-performance-logger)
+target_compile_definitions(app PRIVATE FMT_HEADER_ONLY=1)
+```
+
+## Generating keys and decoding logs
+
+`crypt_example` prints an ECDH key pair and an AES example key:
+
+```bash
+./crypt_example
+# server_pri_hex: ...
+# server_pub_hex: ...
+```
+
+Put `server_pub_hex` into `EffectiveSink::Conf::pub_key`, and keep `server_pri_hex` on the decoder side.
+
+Decode a log file:
+
+```bash
+./decoder <log-file> <server-private-key-hex> <output.txt>
+```
+
+The decoder performs: chunk header validation → ECDH with the embedded client public key → AES decryption → Zstd decompression → Protobuf parsing → text formatting. The output pattern is set in `decode/decode.cc` (for example `[%l][%D:%S][%p:%t][%F:%f:%#]%v`).
+
+## Repository layout
+
+```text
+.
+├── CMakeLists.txt
+├── logger/                      # core static library
+│   ├── logger.h                 # EXT_LOG_* macros
+│   ├── log_handle.h             # level filtering + sink fan-out
+│   ├── log_variadic_handle.h    # fmt-based variadic Log()
+│   ├── log_factory.h            # global handle singleton
+│   ├── log_msg.h                # message model
+│   ├── compress/                # Zstd / Zlib compressors
+│   ├── context/                 # executor and thread pool
+│   ├── crypt/                   # ECDH + AES
+│   ├── formatter/               # text and Protobuf formatters
+│   ├── mmap/                    # mmap cache (POSIX / Win32)
+│   ├── sinks/                   # console and persistent sinks
+│   ├── utils/                   # system and file utilities
+│   ├── proto/effective_msg.proto
+│   └── third_party/             # vendored dependencies
+├── example/                     # runnable examples
+├── decode/                      # offline decoder
+└── script/                      # build scripts and bundled protoc
+```
+
+## Performance
+
+`example/logger_example.cc` and `example/macro_logger_example.cc` write 1,000,000 messages of 2 KB and print the elapsed time, so you can reproduce the measurement on your own machine:
+
+```bash
+./logger_example
+./macro_logger_example
+```
+
+Throughput and compression ratio depend on payload size, log level, compression algorithm, and disk speed. As a rough reference on a desktop CPU, the asynchronous path is designed for 100k+ records/s, and repetitive text logs typically shrink to about 20% of their original size with Zstd.
+
+## Limitations
+
+- The log format is custom and requires the matching decoder and server private key.
+- Decoding is currently single-threaded and reads the whole file into memory.
+- The bundled `protoc` binaries are platform-specific (Windows `protoc.exe`, Linux x86-64 `protoc`).
+
+## License
+
+[MIT](LICENSE)

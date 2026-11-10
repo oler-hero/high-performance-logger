@@ -140,7 +140,7 @@ int main(int argc, char* argv[]) {
     std::string output_file_path = argv[3]; //    参数3：输出文本文件路径（解码后的可读日志）
 #else   //    - #else 分支：走硬编码测试（开发调试方便）。
     std::string input_file_path = "D:/logger/loggerdemo_20241023210917.log";
-    std::string pri_key = "FAA5BBE9017C96BF641D19D0144661885E831B5DDF52539EF1AB4790C05E665E";
+    std::string pri_key = "<server-private-key-hex>";  // 请填入自己的服务端私钥，不要提交到仓库
     std::string output_file_path = "D:/logger/d.txt";
 #endif
     try {   //  - 捕获内部流程（如读文件/魔数校验/ECDH/解密/解压/反序列化）抛出的异常；打印错误并以 1 退出。
