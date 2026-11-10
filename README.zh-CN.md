@@ -69,11 +69,12 @@ ChunkHeader                                      ItemHeader        payload
 
 | 库 | 版本 |
 | --- | --- |
-| zstd | 1.5.6 |
-| zlib | 1.2.13 |
-| protobuf | 21.8 |
+| zstd | 1.5.8 |
+| zlib | 1.3.1.1 |
+| protobuf | 6.34.0 |
+| abseil | 20250512.1 |
 | cryptopp | 8.9.0 |
-| fmt | 11.0.2 |
+| fmt | 12.0.0 |
 
 ### Windows
 

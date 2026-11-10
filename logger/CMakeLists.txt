@@ -2,6 +2,9 @@ include_guard(GLOBAL)
 
 include_directories(. third_party/cryptopp third_party/fmt/include third_party/zlib third_party/protobuf/src)
 
+# Use the vendored Abseil copy instead of downloading it during configure.
+set(FETCHCONTENT_SOURCE_DIR_ABSL "${CMAKE_CURRENT_SOURCE_DIR}/third_party/abseil-cpp" CACHE PATH "Vendored Abseil sources")
+
 add_subdirectory(third_party/cryptopp)
 # 恢复使用项目protobuf
 add_subdirectory(third_party/protobuf/cmake protobuf)
