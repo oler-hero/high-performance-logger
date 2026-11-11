@@ -1,12 +1,24 @@
-# 高性能日志系统
+# 高性能跨平台异步日志库
 
 [English](README.md) | 简体中文
 
-一个基于 **mmap 双缓冲**、**流式压缩**、**ECDH + AES 加密** 和 **Protobuf 序列化** 的 C++17 异步日志库。目标是在业务线程不被阻塞的前提下写入大量日志，并保证落盘数据经过压缩与加密。
+> 面向服务端的 C++17 异步日志库：业务线程只写内存、不碰磁盘，压缩、加密与落盘全部后台化；落盘数据自带完整性校验与端到端加密，可通过配套解码器离线还原。
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
+![Compression](https://img.shields.io/badge/compression-Zstd%20%7C%20Zlib-orange)
+![Crypto](https://img.shields.io/badge/crypto-ECDH%2BAES-red)
 ![License](https://img.shields.io/badge/license-MIT-green)
+
+## 设计目标
+
+| 目标 | 实现手段 |
+| --- | --- |
+| 前台零磁盘 IO | 业务线程只做格式化与追加内存，压缩 / 加密 / 写盘由后台执行器完成 |
+| 写入不阻塞业务 | 主从双缓冲 + mmap，缓存利用率达阈值后原子交换 |
+| 落盘体积可控 | 按条流式压缩，Zstd / Zlib 可切换，上下文与缓冲区全程复用 |
+| 数据不可明文落盘 | 每个 chunk 用 ECDH 协商密钥，负载 AES 加密，私钥只存在于解码端 |
+| 跨平台行为一致 | POSIX / Win32 差异层统一 mmap、文件与系统工具接口 |
 
 ## 特性
 
@@ -55,6 +67,17 @@ ChunkHeader                                      ItemHeader        payload
 ```
 
 每个 chunk 都携带客户端临时公钥，解码端用服务端私钥即可派生出相同密钥，因此日志文件可以离线解码。
+
+## 关键设计取舍
+
+| 决策点 | 选择 | 代价 | 理由 |
+| --- | --- | --- | --- |
+| 缓存介质 | mmap 映射 + 顺序追加 | 需要自行管理文件大小与缺页 | 省去 `write` 的用户态→内核态拷贝，写入只落 page cache 由内核回刷 |
+| 缓冲策略 | 主从双缓冲交换 | 交换瞬间需短暂互斥 | 前台写入与后台落盘彻底解耦，避免业务线程等待磁盘 |
+| 压缩粒度 | 按条压缩 | 每帧有固定头开销，小日志收益低 | 单条可独立解压，支持随机读取与损坏隔离 |
+| 加密顺序 | 先压缩后加密 | —— | 加密后数据无冗余，顺序颠倒会导致压缩失效 |
+| 记录编码 | Protobuf 二进制 | 需配套 `.proto` 与解码器 | 字段自描述、可扩展，体积远小于文本格式 |
+| 级别过滤 | 编译期裁剪 | 需在构建时确定级别 | 被裁掉的日志不会产生任何运行时开销 |
 
 ## 构建
 
@@ -166,6 +189,38 @@ target_compile_definitions(app PRIVATE FMT_HEADER_ONLY=1)
 
 解码流程为：校验 chunk 头 → 用内嵌的客户端公钥做 ECDH → AES 解密 → Zstd 解压 → Protobuf 反序列化 → 按格式串输出。格式串在 `decode/decode.cc` 中设置，例如 `[%l][%D:%S][%p:%t][%F:%f:%#]%v`。
 
+## 性能与压缩率
+
+### 写入路径
+
+`example/logger_example.cc` 与 `example/macro_logger_example.cc` 写入 100 万条 2 KB 日志并打印耗时，可本机复现：
+
+```bash
+./logger_example
+./macro_logger_example
+```
+
+异步写入路径按 **10 万条/秒** 设计；实际吞吐取决于消息大小、日志级别、压缩算法、CPU 核数与磁盘性能，建议在目标机器上以 Release 构建实测。
+
+> `logger_example` 使用随机字符串作为负载，目的是压测写入路径本身。随机数据几乎不含冗余，因此该示例不适合用来评估压缩收益。
+
+### 压缩率
+
+按条调用 Zstd（level 5，与 `ZstdCompress` 的配置一致），每类样本 2000 条，统计压缩前后总字节：
+
+| 样本 | 原始体积 | 压缩后 | 体积下降 |
+| --- | --- | --- | --- |
+| 2 KB 业务日志样式（固定字段模板，重复度高） | 3.91 MB | 0.34 MB | **91.2%** |
+| 2 KB 随机小写字母 | 3.91 MB | 2.40 MB | 38.6% |
+| 200 B 业务日志 | 391 KB | 340 KB | 13.1% |
+| 100 B 业务日志 | 195 KB | 193 KB | 1.2% |
+
+结论与取舍：
+
+- 压缩率由**数据冗余度**决定，而不是库本身：2 KB 量级的业务日志通常可下降约 80%～90%。
+- 小于 200 B 的记录因帧头开销占比过高，收益有限；这正是字典压缩的适用场景，`ZstdCompress::SetCompressionDictionary` 已预留接口，目前 `EffectiveSink` 尚未启用。
+- 先压缩后加密，加密后的数据不可再压缩。
+
 ## 目录结构
 
 ```text
@@ -191,22 +246,18 @@ target_compile_definitions(app PRIVATE FMT_HEADER_ONLY=1)
 └── script/                      # 构建脚本与内置 protoc
 ```
 
-## 性能
-
-`example/logger_example.cc` 和 `example/macro_logger_example.cc` 会写入 100 万条 2 KB 日志并打印耗时，可以直接在自己的机器上复现：
-
-```bash
-./logger_example
-./macro_logger_example
-```
-
-吞吐与压缩率取决于消息大小、日志级别、压缩算法和磁盘性能。粗略参考：在桌面级 CPU 上异步写入路径按 10 万条/秒设计，重复度较高的文本日志经 Zstd 压缩后通常能降到原体积的 20% 左右。
-
 ## 已知限制
 
 - 日志格式为自定义二进制格式，必须使用配套解码器和服务端私钥才能还原。
 - 解码器目前是单线程，并会把整个文件读入内存。
 - 内置的 `protoc` 与平台绑定（Windows `protoc.exe`、Linux x86-64 `protoc`）。
+- 小记录（< 200 B）按条压缩收益有限，字典压缩尚未在 `EffectiveSink` 中启用。
+
+## 后续优化
+
+- 启用训练字典压缩，提升小日志的压缩收益。
+- 解码器改为流式解析，支持大文件与并发解码。
+- 补充脚本化 benchmark（吞吐 / P50 / P99 / 落盘体积）并接入 CI。
 
 ## 许可证
 

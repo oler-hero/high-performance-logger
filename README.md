@@ -1,12 +1,24 @@
-# High-Performance Logger
+# High-Performance Cross-Platform Async Logger
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+English | [简体中文](README.zh-CN.md)
 
-A C++17 asynchronous logging library built around a **double-buffered mmap cache**, **streaming compression**, **ECDH + AES encryption**, and **Protobuf serialization**. It is designed for services that need to write large volumes of logs without blocking the business thread, while keeping the log files compressed and encrypted at rest.
+> A C++17 asynchronous logging library for services: the business thread only writes to memory and never touches the disk, while compression, encryption, and persistence all happen in the background. Every chunk is checksummed and end-to-end encrypted, and can be restored offline with the bundled decoder.
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
+![Compression](https://img.shields.io/badge/compression-Zstd%20%7C%20Zlib-orange)
+![Crypto](https://img.shields.io/badge/crypto-ECDH%2BAES-red)
 ![License](https://img.shields.io/badge/license-MIT-green)
+
+## Design goals
+
+| Goal | Approach |
+| --- | --- |
+| No disk I/O on the hot path | Producers only format and append to memory; compression, encryption, and disk writes run in a background executor |
+| Never block the business thread | Master/slave double buffering over mmap, swapped atomically when utilization hits a threshold |
+| Predictable on-disk footprint | Per-record streaming compression with switchable Zstd / Zlib; contexts and buffers are reused |
+| No plaintext at rest | ECDH key agreement per chunk + AES payload encryption; the private key only exists on the decoder side |
+| Identical behavior across platforms | POSIX / Win32 abstraction for mmap, file system, and system utilities |
 
 ## Features
 
@@ -55,6 +67,17 @@ ChunkHeader                                      ItemHeader        payload
 ```
 
 Each chunk carries the client's ephemeral public key. The decoder derives the same shared secret with the server private key, so a log file can be decoded offline without contacting the service.
+
+## Design trade-offs
+
+| Decision | Choice | Cost | Rationale |
+| --- | --- | --- | --- |
+| Cache medium | mmap + sequential append | Must manage file size and page faults manually | Removes the user-to-kernel copy of `write`; data lands in page cache and is flushed by the kernel |
+| Buffer strategy | Master/slave swap | A brief lock during the swap | Fully decouples front-end writes from disk I/O |
+| Compression granularity | Per record | Fixed frame overhead per record | Records decompress independently, enabling random access and fault isolation |
+| Encryption order | Compress, then encrypt | — | Ciphertext has no redundancy; reversing the order makes compression useless |
+| Record encoding | Protobuf binary | Requires `.proto` and a decoder | Self-describing, extensible, far smaller than text |
+| Level filtering | Compile-time stripping | Level fixed at build time | Stripped calls cost nothing at runtime |
 
 ## Build
 
@@ -166,6 +189,38 @@ Decode a log file:
 
 The decoder performs: chunk header validation → ECDH with the embedded client public key → AES decryption → Zstd decompression → Protobuf parsing → text formatting. The output pattern is set in `decode/decode.cc` (for example `[%l][%D:%S][%p:%t][%F:%f:%#]%v`).
 
+## Performance and compression
+
+### Write path
+
+`example/logger_example.cc` and `example/macro_logger_example.cc` write 1,000,000 messages of 2 KB and print the elapsed time, so you can reproduce the measurement on your own machine:
+
+```bash
+./logger_example
+./macro_logger_example
+```
+
+The asynchronous path is designed for **100k records/s**; actual throughput depends on payload size, log level, compression algorithm, core count, and disk speed. Measure it on your target machine with a Release build.
+
+> `logger_example` uses random strings on purpose — it stresses the write path itself. Random data carries almost no redundancy, so this example is not suitable for evaluating compression gains.
+
+### Compression ratio
+
+Measured per record with Zstd level 5 (matching `ZstdCompress`), 2,000 records per sample, comparing total bytes before and after compression:
+
+| Sample | Original | Compressed | Size reduction |
+| --- | --- | --- | --- |
+| 2 KB business-log style (fixed field template, high redundancy) | 3.91 MB | 0.34 MB | **91.2%** |
+| 2 KB random lowercase letters | 3.91 MB | 2.40 MB | 38.6% |
+| 200 B business-log style | 391 KB | 340 KB | 13.1% |
+| 100 B business-log style | 195 KB | 193 KB | 1.2% |
+
+Takeaways:
+
+- Compression depends on **data redundancy**, not on the library: 2 KB business logs typically shrink by 80%–90%.
+- Records below ~200 B see little benefit because per-frame overhead dominates — this is exactly the case for dictionary compression. `ZstdCompress::SetCompressionDictionary` is implemented but not yet enabled in `EffectiveSink`.
+- Compression always happens before encryption; ciphertext cannot be compressed.
+
 ## Repository layout
 
 ```text
@@ -191,22 +246,18 @@ The decoder performs: chunk header validation → ECDH with the embedded client 
 └── script/                      # build scripts and bundled protoc
 ```
 
-## Performance
-
-`example/logger_example.cc` and `example/macro_logger_example.cc` write 1,000,000 messages of 2 KB and print the elapsed time, so you can reproduce the measurement on your own machine:
-
-```bash
-./logger_example
-./macro_logger_example
-```
-
-Throughput and compression ratio depend on payload size, log level, compression algorithm, and disk speed. As a rough reference on a desktop CPU, the asynchronous path is designed for 100k+ records/s, and repetitive text logs typically shrink to about 20% of their original size with Zstd.
-
 ## Limitations
 
 - The log format is custom and requires the matching decoder and server private key.
 - Decoding is currently single-threaded and reads the whole file into memory.
 - The bundled `protoc` binaries are platform-specific (Windows `protoc.exe`, Linux x86-64 `protoc`).
+- Per-record compression gives limited benefit for records under 200 B; dictionary compression is not yet wired into `EffectiveSink`.
+
+## Roadmap
+
+- Train and enable dictionary compression for small records.
+- Make the decoder stream-based to support large files and parallel decoding.
+- Add a scripted benchmark (throughput / P50 / P99 / on-disk size) and wire it into CI.
 
 ## License
 
