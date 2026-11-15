@@ -25,6 +25,10 @@ class ZstdCompress final : public Compression {
 
   size_t CompressBound(size_t input_size) override;
 
+  //新建一份同配置实例（压缩级别在构造函数里统一设置）。
+  //会把已经挂上的字典一起带过去，否则每线程克隆出来的实例压出来的帧解不开。
+  std::unique_ptr<Compression> Clone() const override;
+
   // ============================================================
   // 流式压缩接口
   // ============================================================
@@ -54,7 +58,7 @@ class ZstdCompress final : public Compression {
   /// @param dict 字典数据
   /// @param dict_size 字典大小
   /// @return 成功返回 true
-  bool SetCompressionDictionary(const void* dict, size_t dict_size);
+  bool SetCompressionDictionary(const void* dict, size_t dict_size) override;
 
   /// @brief 设置解压字典（必须与压缩时使用的字典相同）
   /// @param dict 字典数据
@@ -69,6 +73,7 @@ class ZstdCompress final : public Compression {
   //为什么是指针类型：ZSTD_CCtx是"不透明类型"（opaque type），只能通过指针操作
   ZSTD_CCtx* cctx_;     //  压缩上下文(指针）     内部状态：哈希表，序列缓冲    算法：编码算法
   ZSTD_DCtx* dctx_;     //  解压上下文(指针)      内部状态：解码表，输出窗口    算法：解码算法
+  std::string dict_;    //  已加载的压缩字典副本（Clone 时用）
 
 };
 }

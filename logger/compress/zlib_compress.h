@@ -38,6 +38,9 @@ class ZlibCompress final : public Compression {
 
   size_t CompressBound(size_t input_size) override;
 
+  //新建一份同配置实例
+  std::unique_ptr<Compression> Clone() const override { return std::make_unique<ZlibCompress>(); }
+
  private:
   void InitCompressStream_();           // 新增：初始化压缩流
   void ResetUncompressStream_();        //只重置解压流（不重置压缩流）

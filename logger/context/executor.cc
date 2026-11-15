@@ -16,6 +16,11 @@ Executor::ExecutorTimer::~ExecutorTimer() {
 void Executor::ExecutorTimer::Stop() {
     running_.store(false);          //更改状态
     cond_.notify_all();             //释放所有等待线程
+    //必须先等 Run_() 真正退出，再销毁线程池：
+    //Run_() 内部会往 thread_pool_ 投任务，池子先析构就是 use-after-free。
+    if (timer_thread_.joinable()) {
+        timer_thread_.join();
+    }
     thread_pool_.reset();           //重置线程池
 
     //不处理，避免数据竞争风险
@@ -30,11 +35,10 @@ bool Executor::ExecutorTimer::Start() {
     }
     running_.store(true);
     bool ret = thread_pool_->Start();
-    //this 是当前对象的指针（Executor::ExecutorTimer*）。
-    //成员函数必须绑定到一个对象实例才能调用，this 就是"在哪个对象上调用 Run_()"
-    //成员函数必须通过对象调用（obj.Run_() 或 obj_ptr->Run_()），不能单独存在。
-    //所以只能取地址+传对象，this 指的是当前正在执行 Start() 的那个 ExecutorTimer 对象，传的是这个对象
-    thread_pool_->RunTask(&Executor::ExecutorTimer::Run_,this);
+    //Run_() 是死循环，必须给它一条独立线程。
+    //之前把它投进 ThreadPool(1)，唯一的工作线程被这个死循环占住，
+    //Run_() 里再往同一个池子投递的任务永远没有线程执行 —— 定时清理任务因此从未运行过。
+    timer_thread_ = std::thread([this]() { Run_(); });
     return ret;
 }
 

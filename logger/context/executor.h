@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -84,6 +85,7 @@ class Executor {
         std::mutex mutex_;
         std::condition_variable cond_;                                  //保护队列；当加入更早的任务或停止时，用条件变量唤醒定时器线程
         std::atomic<bool> running_;                                     //是否运行中的标志，控制 Run_ 循环退出
+        std::thread timer_thread_;                                      //定时循环专用线程：Run_() 是死循环，不能占用线程池的工作线程
         std::unique_ptr<ThreadPool> thread_pool_;                       //真正执行任务的线程池；定时器线程只负责“到点了就把 task 丢给线程池执行”
 
         std::atomic<RepeatedTaskId> repeated_task_id_;                  //生成重复任务的唯一 ID

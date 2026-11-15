@@ -22,7 +22,9 @@ namespace detail {
         static constexpr uint64_t kMagic = 0xdeadbeefdada1100;  //16 进制字面量只能包含 0-9、a-f（或大写 A-F）所以不能有t
         uint64_t magic;         //实例中的魔数字段，默认等于 kMagic
         uint64_t size;          //ChunkHeader::size 表示“本次写盘这一块负载的长度（字节数）”，不包含 ChunkHeader 自身。
-        char pub_key[128];      //客户端公钥的序列化（或其二进制/文本存储位置），便于服务端解密。
+        char pub_key[128]{};      //客户端公钥的序列化（或其二进制/文本存储位置），便于服务端解密。
+                                  //必须值初始化：只 memcpy 65 字节（P-256 未压缩点），
+                                  //剩下 63 字节否则是未初始化内存，会被原样写进每个 chunk 头。
 
         ChunkHeader() : magic(kMagic), size(0) {}   //默认构造
     };
@@ -46,11 +48,17 @@ class EffectiveSink final : public LogSink {
     std::chrono::minutes interval{5};   //清理任务的触发间隔（定期淘汰旧文件）
     megabytes single_size{4};           //单个日志文件的滚动上限（达到则切新文件）
     megabytes total_size{100};          //目录下所有日志文件的总容量上限（超过则删除旧文件）
+    //可选的 zstd 压缩字典文件路径。留空表示不用字典。
+    //小日志（<200B）的固定开销占比过高，落盘体积反而会变大；挂上字典后才有压缩收益。
+    //注意：decoder 必须加载同一份字典才能解开，属于部署上的额外约定。
+    std::filesystem::path dict_path;
   };
 
   explicit EffectiveSink(Conf conf);
 
-  ~EffectiveSink() override = default;
+  //析构时必须把缓存里剩下的一批刷出去：正常路径下只有缓存利用率超过阈值才落盘，
+  //不满阈值的那一批会一直留在 master cache 里，进程退出就丢了。
+  ~EffectiveSink() override { Flush(); }
 
   /// @brief 入口：每条日志调用一次(语义：格式化→压缩→加密→写入主缓存；当缓存利用率超过阈值时触发“交换缓存并异步落盘”)
   /// @param msg 一条结构化日志信息（时间、级别、文本等）
@@ -98,8 +106,8 @@ class EffectiveSink final : public LogSink {
   std::unique_ptr<MMapAux> slave_cache_;            //从缓存，和主缓存成对使用做“双缓冲”：当需要落盘/轮转时，原子交换 master↔slave，后台线程独占读取 slave 进行压缩加密落盘，前台继续写新的 master，实现“写入无阻塞”。
   std::filesystem::path log_file_path_;             //当前落盘文件路径；用于切卷（按大小/时间/数量）时更新，以及后台写盘时确定目标文件。
   std::string client_pub_key_;                      //客户端公钥（通过 ECDH 与服务端公钥派生共享密钥；也写入 ChunkHeader）用于密钥派生/校验，且会写入 chunk 头部，便于服务端解密与追踪来源
-  std::string compressed_buf_;                        //压缩阶段的复用临时缓冲，避免每次分配/释放带来的抖动与碎片；需在互斥保护下使用或只在后台线程使用。
-  std::string encryped_buf_;                        //加密输出复用缓冲；同理减少分配开销与缓存失效，提高吞吐
+  //压缩/加密的临时缓冲已改为 Log() 内的 thread_local：
+  //放在成员里会被所有业务线程共享，只能靠 mutex_ 串行，等于把压缩加密锁进了临界区。
   std::atomic<bool> is_slave_free_{true};           //从缓存是否空闲的原子标志
 };
 

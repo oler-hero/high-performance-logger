@@ -36,7 +36,9 @@ AESCrypt::~AESCrypt() {
 
 //返回string因为 string 自动管理内存
 std::string AESCrypt::GenerateKey() {
-    CryptoPP::AutoSeededRandomPool rng;     //密码学安全的随机数生成器
+    //构造 AutoSeededRandomPool 要初始化熵池（Windows 下会走系统 CSPRNG），实测单次约 120µs。
+    //RNG 自身线程安全，做成进程内单例即可，不必每次新建。
+    static CryptoPP::AutoSeededRandomPool rng;     //密码学安全的随机数生成器
     byte key[32];                           //aes-256需要32位密钥
     rng.GenerateBlock(key, sizeof(key));    //"用 rng 生成随机数据，填充到 key 数组中，填充 32 字节"
     return std::string(reinterpret_cast<const char*>(key), sizeof(key));    //接口统一，密钥都用string
@@ -44,7 +46,9 @@ std::string AESCrypt::GenerateKey() {
 }
 
 std::string AESCrypt::GenerateIV() {
-    CryptoPP::AutoSeededRandomPool rng;
+    //这里在 Log() 的热路径上：每新建一次 RNG 就多 120µs，
+    //实测占掉写入 P50 延迟的 78%，所以同样做成单例。
+    static CryptoPP::AutoSeededRandomPool rng;
     //CryptoPP::AES::BLOCKSIZE 是什么？ :这是一个常量（编译期就确定的数字）值为16,为什么用：可读性，防止错误
     //byte 类型专门用来表示字节数据，为什么byte
     //1.IV = 16 字节的随机二进制数据

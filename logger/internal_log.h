@@ -28,3 +28,12 @@
 #define LOG_ERROR(...)
 
 #endif
+
+// 高频内部日志：像“每次落盘打一行文件路径”这种，默认关掉。
+// 作为库被业务使用时，往 stdout 刷日志既污染调用方输出，又拖慢后台落盘线程。
+// 需要排查落盘路径时，编译期加 -DLOGGER_INTERNAL_VERBOSE 打开。
+#ifdef LOGGER_INTERNAL_VERBOSE
+#define LOG_VERBOSE(...) LOG_INFO(__VA_ARGS__)
+#else
+#define LOG_VERBOSE(...) (void)0
+#endif

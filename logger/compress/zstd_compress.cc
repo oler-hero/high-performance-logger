@@ -193,7 +193,20 @@ bool ZstdCompress::SetCompressionDictionary(const void* dict, size_t dict_size) 
     }
 
     size_t ret = ZSTD_CCtx_loadDictionary(cctx_, dict, dict_size);
-    return !ZSTD_isError(ret);
+    if (ZSTD_isError(ret)) {
+        return false;
+    }
+    //留一份副本，Clone() 出来的每线程实例要带上同一份字典
+    dict_.assign(reinterpret_cast<const char*>(dict), dict_size);
+    return true;
+}
+
+std::unique_ptr<Compression> ZstdCompress::Clone() const {
+    auto clone = std::make_unique<ZstdCompress>();
+    if (!dict_.empty()) {
+        clone->SetCompressionDictionary(dict_.data(), dict_.size());
+    }
+    return clone;
 }
 
 bool ZstdCompress::SetDecompressionDictionary(const void* dict, size_t dict_size) {

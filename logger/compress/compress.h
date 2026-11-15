@@ -34,6 +34,15 @@ class Compression {
   /// @brief 重置内部的流式/状态（如词典、窗口、帧上下文等），让下一次压缩/解压从“干净状态”开始。
   virtual void ResetStream() = 0;           //对有状态的实现非常重要；对于无状态实现，这可以是空操作
 
+  /// @brief 复制一个同类型、同默认配置的实例。
+  /// 压缩器内部持有 cctx_ 这类有状态的上下文，不能被多个线程同时使用；
+  /// 业务线程各自 Clone 一份，就能把压缩从临界区里挪出去。
+  virtual std::unique_ptr<Compression> Clone() const = 0;
+
+  /// @brief 可选能力：挂一份压缩字典（小数据块压缩率提升明显）。
+  /// 默认不支持，返回 false；ZstdCompress 覆盖了它。
+  virtual bool SetCompressionDictionary(const void* /*dict*/, size_t /*dict_size*/) { return false; }
+
 
 };
 

@@ -129,10 +129,10 @@ void DecodeFile(const std::string& input_file_path, const std::string& pri_key, 
 }
 
 int main(int argc, char* argv[]) {
-    // ./decode <file_path> <pri_key> <output_file>
+    // ./decode <file_path> <pri_key> <output_file> [dict_file]
 #if 1   //    - #if 1 分支：走命令行模式；
-    if (argc != 4) {    //  - 校验参数数量应为 4（包含程序名），即用户需要提供 3 个参数；不满足则打印用法并以错误码 1 退出。
-        std::cerr << "Usage: ./decode <file_path> <pri_key> <output_file>" << std::endl;
+    if (argc != 4 && argc != 5) {    //  - 校验参数数量；第 5 个参数是可选的压缩字典
+        std::cerr << "Usage: ./decode <file_path> <pri_key> <output_file> [dict_file]" << std::endl;
         return 1;
     }
     std::string input_file_path = argv[1];  //  - 参数1：输入日志文件路径（待解码的二进制文件）。
@@ -146,7 +146,21 @@ int main(int argc, char* argv[]) {
     try {   //  - 捕获内部流程（如读文件/魔数校验/ECDH/解密/解压/反序列化）抛出的异常；打印错误并以 1 退出。
         decode_formatter = std::make_unique<DecodeFormatter>();             //  - 初始化全局格式化器（后续 DecodeItemData 会用到，必须先初始化）。
         decode_formatter->SetPattern("[%l][%D:%S][%p:%t][%F:%f:%#]%v");     //  - 设置输出样式（级别/日期/线程/文件:函数:行号/消息体等占位符）。
-        decompress = std::make_unique<logger::compress::ZstdCompress>();    //  - 选择具体解压实现（通过接口 Compression 进行多态绑定，可替换为 zlib 等）。
+        auto zstd = std::make_unique<logger::compress::ZstdCompress>();      //  - 选择具体解压实现（通过接口 Compression 进行多态绑定，可替换为 zlib 等）。
+        if (argc == 5) {
+            // 落盘时用了压缩字典的话，解压必须加载同一份字典
+            std::ifstream dict_file(argv[4], std::ios::binary);
+            if (!dict_file) {
+                std::cerr << "Decode failed: cannot open dict file: " << argv[4] << std::endl;
+                return 1;
+            }
+            std::string dict((std::istreambuf_iterator<char>(dict_file)), std::istreambuf_iterator<char>());
+            if (dict.empty() || !zstd->SetDecompressionDictionary(dict.data(), dict.size())) {
+                std::cerr << "Decode failed: invalid dict file: " << argv[4] << std::endl;
+                return 1;
+            }
+        }
+        decompress = std::move(zstd);
         DecodeFile(input_file_path, pri_key, output_file_path);             //  - 执行完整解码流程：读文件 → 逐块 ECDH→AES 解密 → Zstd 解压 → Protobuf 解析 → 格式化 → 逐块写出。
     } catch (const std::exception& e) {
         std::cerr << "Decode failed: " << e.what() << std::endl;

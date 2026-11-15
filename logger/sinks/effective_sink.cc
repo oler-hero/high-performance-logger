@@ -1,6 +1,8 @@
 #include "sinks/effective_sink.h"
 
+#include <algorithm>
 #include <fstream>
+#include <iterator>
 
 #include "compress/zlib_compress.h"
 #include "compress/zstd_compress.h"
@@ -69,7 +71,8 @@ std::filesystem::path EffectiveSink::GetFilePath_() {
             }
         }
     }
-    LOG_INFO("EffectiveSink::GetFilePath_: log_file_path={}", log_file_path_.string());
+    //这条日志每次落盘都会打一次，属于高频内部日志，默认关闭（见 internal_log.h 的 LOG_VERBOSE）
+    LOG_VERBOSE("EffectiveSink::GetFilePath_: log_file_path={}", log_file_path_.string());
     return log_file_path_;
 }
 
@@ -92,11 +95,13 @@ void EffectiveSink::ElimateFiles_() {
 
     size_t total_bytes = space_cast<bytes>(conf_.total_size).count();
     size_t used_bytes = 0;
-    for (auto& file : files) {
-        used_bytes += fs::GetFileSize(file);
-        if (used_bytes > total_bytes) { 
-            LOG_INFO("EffectiveSink::ElimateFiles_: remove file={}", file.string());
-            std::filesystem::remove(file);
+    for (size_t i = 0; i < files.size(); ++i) {
+        used_bytes += fs::GetFileSize(files[i]);
+        //永远保留最新的一个文件（files[0]，已按修改时间从新到旧排序）。
+        //否则当 total_size <= single_size 时，第一个文件就超出预算，会把日志全部删光。
+        if (i > 0 && used_bytes > total_bytes) { 
+            LOG_INFO("EffectiveSink::ElimateFiles_: remove file={}", files[i].string());
+            std::filesystem::remove(files[i]);
         }
     }
 }
@@ -118,7 +123,9 @@ void EffectiveSink::CacheToFile_() {
         detail::ChunkHeader chunk_header;
         chunk_header.size = slave_cache_->Size();        //返回的是有效数据大小
         //memcpy要求传入指针，client_pub_key是string，所以用data获取其指针
-        memcpy(chunk_header.pub_key, client_pub_key_.data(), client_pub_key_.size());
+        //这里必须截断：pub_key 字段是 128 字节，而 P-256 未压缩公钥只有 65 字节
+        const size_t key_size = std::min(client_pub_key_.size(), sizeof(chunk_header.pub_key));
+        memcpy(chunk_header.pub_key, client_pub_key_.data(), key_size);
         std::ofstream ofs(file_path, std::ios::binary | std::ios::app);     //二进制追加模式打开文件
         //ofstream::write() 要求 const char*,reinterpret_cast 将指针按位重新解释为 char*
         ofs.write(reinterpret_cast<char*>(&chunk_header), sizeof(chunk_header));
@@ -148,39 +155,57 @@ void EffectiveSink::Flush() {
 }
 
 void EffectiveSink::Log(const LogMsg& msg) {
-    //static thread_local:每个线程有自己独立的静态缓冲区,线程内复用,避免重复分配,线程间隔离,无需同步
-    static thread_local MemoryBuf buf;  
+    //每个线程一份：格式化缓冲、压缩器、压缩输出、加密输出。
+    //改动前这几样都是 sink 的成员，被一把全局锁保护，于是所有业务线程在 Log() 里被迫串行，
+    //8 线程的 P99 从 40µs 恶化到 5ms。现在压缩+加密完全并行，锁只保护最后的 memcpy 追加。
+    static thread_local MemoryBuf buf;
+    static thread_local std::unique_ptr<compress::Compression> tls_compress;
+    static thread_local std::string tls_compressed;
+    static thread_local std::string tls_encrypted;
+
+    if (!tls_compress) {
+        tls_compress = compress_->Clone();   //压缩器持有 cctx_，不能多线程共用，每线程克隆一份
+        if (!tls_compress) {
+            LOG_ERROR("EffectiveSink::Log: clone compressor failed");
+            return;
+        }
+    }
+
     formatter_->Format(msg, &buf);      //第一步先格式化成字符串
-    if (master_cache_->Empty()) {
-        compress_->ResetStream();   //压缩器是有状态的,如果 master_cache_ 为空,说明：
-        //上一个批次的数据已经全部写入并清空
-        //现在是新的批次开始
-        //需要重置压缩器状态,从"干净状态"开始
+
+    tls_compressed.resize(tls_compress->CompressBound(buf.size()));
+    size_t compressed_size =
+        tls_compress->Compress(buf.data(), buf.size(), tls_compressed.data(), tls_compressed.size());
+    if (compressed_size == 0) {     //出错写出错并返回
+        LOG_ERROR("EffectiveSink::Log: compress failed");
+        return;
     }
+
+    tls_encrypted.clear();      //将 size() 置为 0,容量通常保留,便于复用
+    tls_encrypted.reserve(compressed_size + 16);    //+16 是为了容纳分组加密可能添加的填充
+    crypt_->Encrypt(tls_compressed.data(), compressed_size, tls_encrypted);   //AESCrypt 内部无共享状态，线程安全
+    if (tls_encrypted.empty()) {    //错误则写日志并返回
+        LOG_ERROR("EffectiveSink::Log: encrypt failed");
+        return;
+    }
+
+    bool need_flush = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);       //加锁保护全流程
-        compressed_buf_.resize(compress_->CompressBound(buf.size()));      //预留足够空间
-        size_t compressed_size = 
-            compress_->Compress(buf.data(), buf.size(), compressed_buf_.data(), compressed_buf_.size());    //压缩时存储返回值用于判断是否出错
-        if (compressed_size == 0) {     //出错写出错并返回
-            LOG_ERROR("EffectiveSink::Log: compress failed");
-            return;
-        }
-        encryped_buf_.clear();      //将 size() 置为 0,容量通常保留,便于复用,因为上一次加密的数据可能还在
-        encryped_buf_.reserve(compressed_size + 16);    //compressed_size + 16：+ 16 是为了容纳加密算法可能添加的开销,+16因为块大小是16
-        crypt_->Encrypt(compressed_buf_.data(), compressed_size, encryped_buf_); //加密调用
-        if (encryped_buf_.empty()) {    //错误则写日志并返回
-            LOG_ERROR("EffectiveSink::Log: encrypt failed");
-            return;
-        }
-        WirteToCache_(encryped_buf_.data(), encryped_buf_.size());    //将日志写入主缓存
+        //临界区只剩“追加到 mmap 缓存”这一步，约 0.2µs；
+        //顺带在锁内判断利用率，避免读到别的线程正在交换的 master_cache_ 指针。
+        std::lock_guard<std::mutex> lock(mutex_);
+        WirteToCache_(tls_encrypted.data(), tls_encrypted.size());
+        need_flush = NeedCacheToFile_();
     }
-    if (NeedCacheToFile_()) {
-        if (is_slave_free_.load()) {
-            is_slave_free_.store(false);
+
+    if (need_flush) {
+        //用 CAS 抢占“交换权”：原来是 check-then-act，两个线程可能同时看到空闲并连续交换两次，
+        //导致前台正在写的缓存被后台读走。
+        bool expected = true;
+        if (is_slave_free_.compare_exchange_strong(expected, false)) {
             SwapCache_();
+            PrepareToFile_();
         }
-        PrepareToFile_();   //理论上是一种并发保护方法,但是貌似冗余了
     }
 }
 
@@ -188,21 +213,41 @@ EffectiveSink::EffectiveSink(Conf conf) : conf_(std::move(conf)) {
     LOG_INFO("EffectiveSink: dir={}, prefix={}, pub_key={}, interval={}, single_size={}, total_size={}", 
             conf_.dir.string(), conf_.prefix, conf_.pub_key, conf_.interval.count(), conf_.single_size.count(),
             conf_.total_size.count());      //自定义的 space 里，.count() 返回内部的标量值,chrono同理
-    if (std::filesystem::exists(conf_.dir)) {   //- exists：检查目录是否存在
-        std::filesystem::create_directories(conf_.dir);     //- create_directories：不存在则创建（包括父目录）
-    }   
+    //目录必须先于 mmap 存在：mmap 缓存文件就建在这个目录下。
+    //create_directories 自带“已存在则不做任何事”的语义，不需要先 exists() 判断；
+    //用 error_code 版本避免异常，最后统一确认目录真的可用了，否则直接抛错，
+    //而不是让后续的 mmap 失败、Push() 静默丢日志。
+    std::error_code ec;
+    std::filesystem::create_directories(conf_.dir, ec);
+    if (ec || !std::filesystem::is_directory(conf_.dir)) {
+        throw std::runtime_error("EffectiveSink: cannot create log dir: " + conf_.dir.string() +
+                                 (ec ? (" (" + ec.message() + ")") : ""));
+    }
     task_runner_ = NEW_TASK_RUNNER(10086);      //- NEW_TASK_RUNNER(10086)：创建标识为 10086 的线程池
     formatter_ = std::make_unique<EffectiveFormatter>();    //不加括号就不是生成对象，只是指向函数模板本身并没有调用它
     auto ecdh_key = crypt::GenECDHKey();    //一个不隶属与类，隶属于crypt空间的函数，生成一对公私钥
     auto client_pri = std::get<0>(ecdh_key);    //客户端私钥（本地保存）
     client_pub_key_ = std::get<1>(ecdh_key);    //客户端公钥（写入日志文件头部）
-    LOG_INFO("EffectiveSink: client pub size", client_pub_key_.size());     //打印方便阅读和定位
+    LOG_INFO("EffectiveSink: client pub key size={}", client_pub_key_.size());     //打印方便阅读和定位
     std::string svr_pub_key_bin = crypt::HexKeyToBinary(conf_.pub_key);     //将服务器公钥从十六进制转为二进制
     //client_pri 来自 GenECDHKey() 返回的就是二进制（32 字节），可直接用。
     //conf_.pub_key 多半是为了存储/传输而用的十六进制文本（长度通常 130 字符，P-256 未压缩公钥），所以要先 HexKeyToBinary 变回 65 字节原始公钥；
     std::string shared_secret = crypt::GenECDHSharedSecret(client_pri, svr_pub_key_bin);    //用客户端私钥和服务器公钥计算共享密钥    
     crypt_ = std::make_unique<crypt::AESCrypt>(shared_secret);  //- 使用共享密钥初始化 AES 加密器
     compress_ = std::make_unique<compress::ZstdCompress>();     //- 创建 Zstd 压缩器
+    //可选：加载压缩字典。小日志（<200B）里 IV + AES 填充 + 帧头 + protobuf 头的固定开销占比过高，
+    //端到端落盘体积反而是变大的；挂上字典才压得动。
+    if (!conf_.dict_path.empty()) {
+        std::ifstream dict_file(conf_.dict_path, std::ios::binary);
+        if (!dict_file) {
+            throw std::runtime_error("EffectiveSink: cannot open dict file: " + conf_.dict_path.string());
+        }
+        std::string dict((std::istreambuf_iterator<char>(dict_file)), std::istreambuf_iterator<char>());
+        if (dict.empty() || !compress_->SetCompressionDictionary(dict.data(), dict.size())) {
+            throw std::runtime_error("EffectiveSink: invalid compression dictionary: " + conf_.dict_path.string());
+        }
+        LOG_INFO("EffectiveSink: compression dictionary loaded, size={}", dict.size());
+    }
     master_cache_ = std::make_unique<MMapAux>(conf_.dir / "master_cache");  //- master_cache_：主缓存（前台写入）
     slave_cache_  = std::make_unique<MMapAux>(conf_.dir / "slave_cache");   //- slave_cache_：从缓存（后台落盘）
     if (!master_cache_ || !slave_cache_) {
