@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-> A C++17 asynchronous logging library for services: the business thread only writes to memory and never touches the disk, while compression, encryption, and persistence all happen in the background. Every chunk is checksummed and end-to-end encrypted, and can be restored offline with the bundled decoder.
+> A C++17 asynchronous logging library for services: the business thread formats, compresses, and encrypts each record before appending it to an mmap cache; only the disk write is handed to a background thread. Records carry magic-number validation and end-to-end encryption, and can be restored offline with the bundled decoder.
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
@@ -14,25 +14,25 @@ English | [简体中文](README.zh-CN.md)
 
 | Goal | Approach |
 | --- | --- |
-| No disk I/O on the hot path | Producers only format and append to memory; compression, encryption, and disk writes run in a background executor |
+| No disk I/O on the hot path | Producers format, compress, encrypt, and append to an mmap cache; only the disk write runs in a background executor |
 | Never block the business thread | Master/slave double buffering over mmap, swapped atomically when utilization hits a threshold |
 | Scales with threads | Per-thread compressor instances via `Clone()`, `thread_local` scratch buffers, minimal critical section |
-| Predictable on-disk footprint | Per-record streaming compression (Zstd / Zlib), optional trained dictionary for small records |
-| No plaintext at rest | ECDH key agreement per chunk + AES payload encryption; the private key only exists on the decoder side |
+| Predictable on-disk footprint | Per-record compression, one independent frame each (Zstd / Zlib); optional trained dictionary for small records |
+| No plaintext at rest | ECDH key agreement per chunk + AES payload encryption; the server private key only exists on the decoder side |
 | Identical behavior across platforms | POSIX / Win32 abstraction for mmap, file system, and system utilities |
 
 ## Features
 
-- **Asynchronous, non-blocking writes** — producers only format and append to an mmap-backed cache; a background executor performs compression, encryption, and disk I/O.
+- **Asynchronous, non-blocking writes** — producers format, compress, and encrypt, then append to an mmap-backed cache; only the disk write runs in a background executor.
 - **Double-buffered mmap persistence** — master/slave caches are swapped when the master reaches a configurable utilization threshold, so writing continues while the slave is flushed to disk.
 - **Scales with threads** — compression and encryption no longer share a global lock; each thread clones its own compressor, lifting 8-thread throughput ~1.8× and cutting P99 from milliseconds to hundreds of microseconds.
-- **Streaming compression** — per-record streaming compression with Zstd or Zlib; compression contexts and input/output buffers are reused.
+- **Per-record compression** — each record is compressed into its own frame with Zstd or Zlib; compressor instances and scratch buffers are reused per thread.
 - **Optional dictionary compression** — point `Conf::dict_path` at a trained zstd dictionary to fix on-disk bloat for small records.
-- **End-to-end encryption** — ECDH key agreement per chunk + AES for record payloads. The private key never leaves the decoder side.
+- **End-to-end encryption** — ECDH key agreement per chunk + AES for record payloads. The client private key is discarded after use; the server private key never leaves the decoder side.
 - **Protobuf record encoding** — structured fields (level, timestamp, pid, tid, file, function, line, message) are serialized with a custom `.proto` schema, enabling custom output formats at decode time.
 - **Pluggable architecture** — sinks, formatters, compressors, and cryptors are all behind abstract interfaces.
 - **Log rotation and retention** — rotate by file size, evict oldest files when the total directory size exceeds the budget (always keeping the newest), and clean up periodically.
-- **Compile-time level stripping** — disabled log levels expand to `(void)0`, producing zero runtime overhead.
+- **Two-tier level filtering** — `LOGGER_ACTIVE_LEVEL` strips disabled levels to `(void)0` at build time; independently, each `LogHandle` keeps an atomic runtime threshold (default `kInfo`) that is checked before `fmt` runs, so suppressed records never reach formatting, compression, or encryption.
 - **Cross-platform** — POSIX and Win32 abstraction layers for mmap, file system, and system utilities.
 - **Offline decoder** — convert binary log files back into human-readable text with a configurable format pattern and an optional dictionary.
 
@@ -41,7 +41,7 @@ English | [简体中文](README.zh-CN.md)
 ```mermaid
 flowchart LR
     A["Application<br/>EXT_LOG_INFO(...)"] --> B["Formatter<br/>LogMsg -> EffectiveMsg"]
-    B --> C["Compression<br/>Zstd / Zlib (streaming)"]
+    B --> C["Compression<br/>Zstd / Zlib (per record)"]
     C --> D["Encryption<br/>ECDH + AES"]
     D --> E["mmap master cache"]
     E -->|"swap when threshold reached"| F["mmap slave cache"]
@@ -53,8 +53,8 @@ flowchart LR
 
 Write path in detail:
 
-1. `EXT_LOG_*` macros / `LogHandle::Log` filter by level and format the message with `fmt`.
-2. `EffectiveSink` serializes the record with Protobuf, compresses it with the streaming compressor, and encrypts it with the AES key derived from ECDH.
+1. `EXT_LOG_*` macros honour the compile-time bound, `LogHandle` then applies its runtime threshold; only records that pass are formatted with `fmt`.
+2. `EffectiveSink` serializes the record with Protobuf, compresses it into its own frame, and encrypts it with the AES key derived from ECDH.
 3. The encrypted record is appended to the mmap **master cache** as `ItemHeader + payload`.
 4. When the master cache exceeds the utilization threshold, master and slave are swapped, and the background executor writes the slave to disk.
 5. Files are rotated by `single_size`; when `total_size` is exceeded, the oldest files are deleted, always keeping the newest one.
@@ -75,13 +75,13 @@ Each chunk carries the client's ephemeral public key. The decoder derives the sa
 
 | Decision | Choice | Cost | Rationale |
 | --- | --- | --- | --- |
-| Cache medium | mmap + sequential append | Must manage file size and page faults manually | Removes the user-to-kernel copy of `write`; data lands in page cache and is flushed by the kernel |
+| Cache medium | mmap + sequential append | Must manage file size and page faults manually | Removes the per-write syscall; data is still memcpy'd into the mapped region (page cache) and flushed asynchronously by the kernel |
 | Buffer strategy | Master/slave swap | A brief lock during the swap | Fully decouples front-end writes from disk I/O |
-| Concurrency model | Per-thread compressor + `thread_local` buffers | One compression context per thread | Moves compression/encryption out of the global lock; P99 drops from milliseconds to hundreds of microseconds |
+| Concurrency model | Per-thread compressor + `thread_local` buffers | One compression context and scratch buffers per thread; memory grows linearly with thread count | Moves compression/encryption out of the global lock; P99 drops from milliseconds to hundreds of microseconds |
 | Compression granularity | Per record | Fixed frame overhead per record | Records decompress independently, enabling random access and fault isolation |
 | Encryption order | Compress, then encrypt | — | Ciphertext has no redundancy; reversing the order makes compression useless |
-| Record encoding | Protobuf binary | Requires `.proto` and a decoder | Self-describing, extensible, far smaller than text |
-| Level filtering | Compile-time stripping | Level fixed at build time | Stripped calls cost nothing at runtime |
+| Record encoding | Protobuf binary | Requires `.proto` and a decoder | Fixed field numbers, extensible, far smaller than text |
+| Level filtering | Two tiers: compile-time stripping + runtime atomic threshold | One atomic load and a compare per call; the compile-time bound is fixed at build time | The build-time bound removes the call site entirely; the runtime threshold changes verbosity without a rebuild and returns before formatting |
 
 ## Build
 
@@ -99,7 +99,7 @@ All dependencies are vendored under `logger/third_party/`, so no network access 
 | zstd | 1.5.8 |
 | zlib | 1.3.1.1 |
 | protobuf | 6.34.0 |
-| abseil | 20250512.1 |
+| abseil | 20250512 |
 | cryptopp | 8.9.0 |
 | fmt | 12.0.0 |
 
@@ -171,7 +171,7 @@ Notes:
 
 - `EXT_LOG_*` use the global handle installed by `EXT_LOGGER_INIT`. You can also call `handle->Log(...)` directly.
 - `ConsoleSink` can be combined with `EffectiveSink` — `LogHandle` accepts one or more sinks.
-- Log levels are stripped at compile time via `LOGGER_ACTIVE_LEVEL` (default: everything enabled). Defining it to e.g. `LOGGER_LEVEL_WARN` removes lower-level calls from the binary.
+- Level control has two tiers. `LOGGER_ACTIVE_LEVEL` (default: everything compiled in) strips lower-level calls from the binary at build time. Separately, every `LogHandle` carries a runtime threshold — default `kInfo`, adjustable through `SetLevel` — and records below it are discarded before `fmt` formatting, so they never reach compression or encryption.
 - High-frequency internal diagnostics (such as logging a file path on every flush) are off by default; enable them with `-DLOGGER_INTERNAL_VERBOSE`.
 
 ### CMake integration
@@ -262,7 +262,7 @@ Root cause: every encryption constructed a new `CryptoPP::AutoSeededRandomPool`,
 | 200 B business log | **32.1% larger** | 24.0% smaller |
 | 100 B business log | 84.1% larger | 36.1% larger |
 
-- At 2 KB, end-to-end size drops by about 68%. The compressor itself (input → output) reaches roughly 90% on highly repetitive samples; the gap comes from Protobuf field headers, frame headers, IV, and AES padding.
+- At 2 KB, end-to-end size drops by about 68%; the gap from the compressor's own ratio comes from Protobuf field headers, frame headers, IV, and AES padding.
 - Below ~200 B, fixed overhead dominates: enabling `Conf::dict_path` turns bloat into compression; 100 B still bloats and can only be fixed by changing the format (frame multiple records together, or share one IV per block).
 - The dictionary is a deployment contract: the writer and the `decoder` must load the same file.
 
@@ -320,6 +320,9 @@ Full parameter list, variance ranges, and before/after tables are in [bench/RESU
 - Records below 100 B still grow end-to-end because of fixed overhead (IV, AES padding, frame headers).
 - When a dictionary is enabled, the writer and the decoder must use the same dictionary file.
 - Single-thread throughput fluctuates noticeably; compare builds with alternating A/B runs.
+- No backpressure: if producers outpace the writer for a sustained period, the mmap cache keeps growing until memory or disk is exhausted.
+- No `fsync`: on power loss or OS crash, data still sitting in page cache is lost; a process crash alone can be recovered by the cache replay on next startup.
+- When mmap expansion fails, `capacity_` is still updated: Windows silently drops records, while Linux dereferences an invalid address and crashes.
 
 ## Roadmap
 
